@@ -1,0 +1,149 @@
+---
+title: "Analyzing a set of growth data measured by plate reader"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dev="png")
+```
+
+This is a documentation for how to read a large set of growth data and extract important physiological parameters.
+
+For practice, below I show typical data of cell growth obtained from a plate reader. 
+The first three columns show the number of cycle, time of measurement (second) and temperature. The rest of columns (A1 to A6) show OD600 readings at each well. Here the data are shwon until 10 cycles, but they actually continue up to 88 cycles.
+
+```{r results = 'asis'}
+library(knitr)
+# read csv file
+df <- read.csv("plate_reader_growth_sample.csv", header = TRUE, check.names=FALSE)
+kable(df[1:10, 1:9], caption = "raw growth data")
+```
+
+Frist, I start with cleaning up for the raw data table in the follwoing order: 
+1) extract columns only for time & OD600 readings (required for producing growth curves)
+2) change time from sec to hr  
+3) extract background values. 
+
+After these process, the table looks like below.
+```{r}
+#remove cycle number and Temp
+df1 <- subset(df, select = -c(`Cycle Nr.`, Temp.))
+
+#change time from sec to hr
+df1$Time <- df1$Time/60/60 
+
+#extract background and calibrate the vlues comparable to with 1cm cuvvete OD spec
+for (i in seq(2, ncol(df1))) {
+  df1[,i] <- (df1[,i]-df1[1,i])*2.14 #substruct background OD and calibrate the values comparable to 1cm cuvvete OD spec
+      for (j in seq(1, nrow(df1))) {
+        if (df1[j,i] > 0) { #extract values only larger than 0 (cause problems to make log plots)
+          df1[j,i] <- df1[j,i]
+        }
+        else {
+          df1[j,i] <- NA
+        }
+      }
+}
+
+kable(df1[1:10, 1:7], caption = "raw growth data")
+```
+
+
+
+Next, based on the cleaned data table, produce growth curves as below.
+```{r, dpi=50, out.width="600px", out.height="600px"}
+# plot growth curves for all columns
+par(mfrow=c(2,3))
+par(new=FALSE)
+for (i in seq(2, ncol(df1))) {
+  plot(df1$Time, df1[,i], xlim=c(0,25), ylim=c(0.01,2), log="y", xaxs = "i", yaxs = "i" ,
+       xlab = "time [hr]", ylab = "OD600", cex.lab=1, cex.axis=1,
+       col="blue", cex=1, pch=1, main = colnames(df1[i])) 
+  par(new=FALSE)
+}
+```
+
+
+
+From my experience, the very high/low OD values have some uncertaintity. Below I extract reliable OD600 values only from 0.05 to 0.5.
+```{r}
+df2<-df1
+for (i in seq(2, ncol(df1))) {
+      for (j in seq(1, nrow(df1))) {
+        if (df1[j,i] > 0.05 & df1[j,i] < 0.5 & is.na(df1[j,i])==FALSE) {
+          df2[j,i] <- df1[j,i]
+        }
+        else {
+          df2[j,i] <- NA
+        }
+      }
+}
+```
+
+
+Now overwrite these relaible OD readings onto the previous plots with red points and calculate growth rates in that range by exponential fitting. 
+```{r, dpi=50, out.width="600px", out.height="600px"}
+# plot growth curves for all columns
+par(mfrow=c(2,3))
+par(new=FALSE)
+for (i in seq(2, ncol(df1))) {
+  plot(df1$Time, df1[,i], xlim=c(0,25), ylim=c(0.01,2), log="y", xaxs = "i", yaxs = "i" ,
+       xlab = "time [hr]", ylab = "OD600", cex.lab=1, cex.axis=1,
+       col="blue", cex=1, pch=1, main = colnames(df1[i])) 
+  points(df2$Time, df2[,i], col="red", cex=1, pch=16)
+  abline(lm(log10(df2[,i]) ~ df2$Time), lty=2, col="red") # the base of line is log10
+  fit <- lm(log(df2[,i]) ~ df2$Time)
+  text(0, 0.02, paste(" growth rate:", fit$coefficients[2]), pos=4, col="red") # the base of slope is natural log
+  par(new=FALSE)
+}
+```
+
+
+
+The fitted growth rates (red lines) can be extracted as below.
+```{r, results = 'asis'}
+output <- matrix(ncol=2, nrow=ncol(df1), head(c("plate number", "growth rate [hr-1]")))
+for (i in seq(2, ncol(df1))) {
+  fit <- lm(log(df2[,i]) ~ df2$Time)
+  output[i,1] <- colnames(df1[i])
+  output[i,2] <- fit$coefficients[2]
+}
+output <- data.frame(output)
+kable(output, caption = "raw growth data")
+```
+
+
+
+
+
+Next, let's think about how time derivative of OD600 (instataneous growth rate) changes. This is useful, for instance, to see at what OD600 cells cosume up nutrient and subsequently growth rate starts to decrease. 
+
+The instataneous growth rate is calcurated as below.
+```{r}
+# first create NULL dataframe
+df_iGR <- matrix(ncol=ncol(df1), nrow=nrow(df1))
+for (i in seq(2, ncol(df1))) {
+  for (j in seq(1, NROW(df1[,i]))) {
+    df_iGR[j,i] <- (log(df1[j+1,i])-log(df1[j,i]))/(df1$Time[j+1]-df1$Time[j])
+  }
+}
+```
+
+
+
+Below are the line plots of how instataneous growth rate (iGR) changes over OD600.
+```{r, dpi=50, out.width="600px", out.height="600px"}
+par(mfrow=c(2,3))
+par(new=FALSE)
+for (i in seq(2, ncol(df1))) {
+  plot(df1[,i], df_iGR[,i], ylim=c(0,1.2), xlim=c(0.01,2), xaxs = "i", yaxs = "i" , log = "x",
+       ylab = "iGR [hr-1]", xlab = "OD600", cex.lab=1.5, cex.axis=1.5,
+       col="blue", type = "l", main = colnames(df1[i])) 
+  par(new=FALSE)
+}
+```
+
